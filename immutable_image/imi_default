@@ -1,0 +1,109 @@
+<%#
+kind: provision
+name: imi_default
+model: ProvisioningTemplate
+oses:
+- CentOS
+- Fedora
+- RedHat
+-%>
+
+<%
+  rhel_compatible = @host.operatingsystem.family == 'Redhat' && @host.operatingsystem.name != 'Fedora'
+  is_fedora = @host.operatingsystem.name == 'Fedora'
+  os_major = @host.operatingsystem.major.to_i
+  os_minor = @host.operatingsystem.minor.to_i
+  realm_compatible = (@host.operatingsystem.name == 'Fedora' && os_major >= 20) || (rhel_compatible && os_major >= 7)
+  # safemode renderer does not support unary negation
+  pm_set = @host.puppetmaster.empty? ? false : true
+  proxy_uri = host_param('http-proxy') ? "http://#{host_param('http-proxy')}:#{host_param('http-proxy-port')}" : nil
+  proxy_string = proxy_uri ? " --proxy=#{proxy_uri}" : ''
+  use_ntp = host_param_true?('use-ntp') || (is_fedora && os_major < 16) || (rhel_compatible && os_major <= 7)
+  iface = @host.provision_interface
+-%>
+
+lang en_US
+keyboard us
+selinux --disabled
+firewall --disabled
+bootloader --disabled
+skipx
+
+#<%= @mediapath %><%= proxy_string %>
+url --url http://mirror.centos.org/centos/7/os/x86_64
+
+timezone --utc UTC
+services --disabled gpm,sendmail,cups,pcmcia,isdn,hpoj,bluetooth,openibd,avahi-daemon,avahi-dnsconfd,hidd,hplip,pcscd
+text
+reboot
+
+%packages --nocore
+%end
+
+%pre --interpreter=/bin/bash
+exec < /dev/tty6 > /dev/tty6 2> /dev/tty6
+/usr/bin/chvt 6
+
+echo "######################################################################"
+echo
+set -x
+
+ERR=0
+TARGET_DEVICE=<%= host_param('target_device') || '/dev/null' %>
+IMAGE_URL=<%= host_param('image_url') || 'http://127.0.0.1/image_uri_missing.error' %>
+OS_DISK_LABEL=<%= host_param('os_disk_label') || 'osdisk' %>
+DATA_DISK_LABEL=<%= host_param('data_disk_label') || 'datadisk' %>
+
+CUR_LABEL=$(blkid -s LABEL ${TARGET_DEVICE}1 | cut -d= -f2 | tr -d \" | tr -d ' ')
+if [ "${CUR_LABEL}" == "${DATA_DISK_LABEL}" ]; then
+  echo "ERROR:  Data disk label found when expecting OS disk label.  Something BAD happened (wrong/missing target disk?).  Cannot continue."
+  ERR=$(($ERR + 1))
+else
+  if [ "${CUR_LABEL}" == "${OS_DISK_LABEL}" ]; then
+    echo "OS disk label found.  Replacing current OS..."
+  elif [ "${CUR_LABEL}" == "" ]; then
+    echo "No OS disk label found.  Installing new OS..."
+  else
+    echo "ERROR:  Foreign OS disk label found.  This is unexpected.  Cannot continue."
+    ERR=$(($ERR + 1))
+  fi
+
+  # get disk image, uncompress it, and write it
+  curl -m 900 --connect-timeout 10 -ks ${IMAGE_URL} | zcat | dd of=${TARGET_DEVICE} bs=1M status=progress
+  ERR=$(($ERR + $?))
+  
+  if  [ $ERR -eq 0 ]; then
+    echo
+    echo "OS installed successfully."
+    echo
+    echo "Labelling OS disk..."
+    xfs_admin -L ${OS_DISK_LABEL} ${TARGET_DEVICE}1
+    ERR=$(($ERR + $?))
+  fi
+fi
+
+# flush disk cache
+sync
+
+if [ $ERR -gt 0 ]; then
+  echo "calling home: build failed!"
+  <%= indent(2, skip1: true) { snippet('built', :variables => { :endpoint => 'failed', :method => 'POST', :body_file => '/dev/null' }) } -%>
+  echo "*******************************************************************"
+  echo
+  echo "  Script FAILED.  Leaving system up with a shell for debugging..."
+  echo
+  echo "*******************************************************************"
+  /bin/bash
+else
+  echo "calling home: build is done!"
+  <%= indent(2, skip1: true) { snippet('built', :variables => { :endpoint => 'built', :method => 'POST', :body_file => '/dev/null' }) } -%>
+  echo "*************************************************************"
+  echo
+  echo "  Script completed successfully.  Rebooting in 5 seconds..."
+  echo
+  echo "*************************************************************"
+  sleep 5
+  reboot
+fi
+
+%end
