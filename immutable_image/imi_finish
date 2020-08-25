@@ -1,0 +1,13 @@
+<%#
+kind: finish
+name: imi_finish
+model: ProvisioningTemplate
+oses:
+- CentOS
+- Fedora
+%>
+  <%#
+  This template does nothing and is actually never called
+  %>
+
+exit 0
