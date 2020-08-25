@@ -1,0 +1,13 @@
+<%#
+kind: user_data
+name: imi_user data
+model: ProvisioningTemplate
+oses:
+- CentOS
+- Fedora
+-%>
+
+# this template does nothing and is never called
+
+# UserData still needs to mark the build as finished
+<%= snippet 'built' %>
